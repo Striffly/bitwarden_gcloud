@@ -15,8 +15,6 @@ services:
     image: vaultwarden/server:latest-alpine
     restart: always
     container_name: bitwarden
-    depends_on:
-    - proxy
     <<: *default-logging
     volumes:
     - ${PWD}/bitwarden:/data
@@ -42,11 +40,15 @@ services:
     - YUBICO_SERVER
     - ORG_CREATION_USERS
     - TZ
-
+    labels:
+    - "com.centurylinklabs.watchtower.enable=true"
+    networks:
+      default:
+        ipv4_address: 172.18.0.10
 
   backup:
-    #build: ./docker/backup                                     # backup, in case container registry is not responsive
-    image: ghcr.io/dadatuputi/bwgc_backup:master                # from https://github.com/dadatuputi/bwgc_backup
+    build: ./docker/backup                                     # backup, in case container registry is not responsive
+    #image: ghcr.io/dadatuputi/bwgc_backup:master                # from https://github.com/dadatuputi/bwgc_backup
     restart: on-failure
     container_name: backup
     depends_on:
@@ -77,7 +79,12 @@ services:
     - SMTP_USERNAME
     - SMTP_PASSWORD
     - TZ
-
+    - BACKUP_EMAIL_NOTIFY_ON_FAILURE_ONLY=true
+    labels:
+    - "com.centurylinklabs.watchtower.enable=false"
+    networks:
+      default:
+        ipv4_address: 172.18.0.12
 
   proxy:
     # Caddy provides an automatic HTTPS reverse proxy with Let's Encrypt cert provisioning
@@ -87,6 +94,8 @@ services:
     image: ghcr.io/dadatuputi/bwgc_caddy:master         # from https://github.com/dadatuputi/bwgc_proxy
     restart: always
     container_name: proxy
+    depends_on:
+    - bitwarden
     <<: *default-logging
     volumes:
     - ${PWD}/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
@@ -100,7 +109,11 @@ services:
     - DOMAIN                            # Value-less variables are set in .env
     - EMAIL
     - TZ
-
+    labels:
+    - "com.centurylinklabs.watchtower.enable=false"
+    networks:
+      default:
+        ipv4_address: 172.18.0.11
 
   ddns:
     # This provides a ddclient dynamic dns updating cron which is as simple as running it
@@ -118,7 +131,11 @@ services:
     - PUID
     - PGID
     - TZ
-
+    labels:
+    - "com.centurylinklabs.watchtower.enable=true"
+    networks:
+      default:
+        ipv4_address: 172.18.0.13
 
   # Uncomment if you want fail2ban to send e-mails,
   # and adjust the depends_on directive in the fail2ban service,
@@ -166,14 +183,15 @@ services:
     - F2B_LOG_LEVEL=INFO
     - F2B_IPTABLES_CHAIN=INPUT
     - TZ
-
+    labels:
+    - "com.centurylinklabs.watchtower.enable=true"
 
   countryblock:
     # The block script will block any country (defaults to CN and AU)
     # Requires cap_add as listed and privileged because it uses iptables and ipset
     # https://hub.docker.com/_/alpine/
-    #build: ./docker/countryblock                       # backup, in case container registry is not responsive
-    image: ghcr.io/dadatuputi/bwgc_countryblock:master  # from https://github.com/dadatuputi/bwgc_countryblock
+    build: ./docker/countryblock                       # backup, in case container registry is not responsive
+    #image: ghcr.io/dadatuputi/bwgc_countryblock:master  # from https://github.com/dadatuputi/bwgc_countryblock
     restart: always
     container_name: countryblock
     <<: *default-logging
@@ -188,12 +206,13 @@ services:
     - COUNTRIES
     - COUNTRYBLOCK_SCHEDULE
     - TZ
-
+    labels:
+    - "com.centurylinklabs.watchtower.enable=false"
 
   watchtower:
     # Watchtower will pull down your new image, gracefully shut down your existing container
     # and restart it with the same options that were used when it was deployed initially
-    # https://github.com/nicholas-fedor/watchtower
+    # https://github.com/nickfedor/watchtower
     image: nickfedor/watchtower
     restart: always
     container_name: watchtower
@@ -206,7 +225,19 @@ services:
     - WATCHTOWER_CLEANUP=true
     - WATCHTOWER_SCHEDULE
     - TZ
-
+    - WATCHTOWER_LABEL_ENABLE=true
+    labels:
+    - "com.centurylinklabs.watchtower.enable=true"
+    networks:
+      default:
+        ipv4_address: 172.18.0.14
 
 volumes:
   caddycerts:
+
+networks:
+  default:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.18.0.0/16
