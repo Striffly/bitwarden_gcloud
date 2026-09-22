@@ -311,7 +311,7 @@ must "instance $INSTANCE created from $LEGACY_FAMILY" create_legacy
 wait_for "ssh on $INSTANCE" 30 ssh_ok "$INSTANCE" || exit 1
 
 on "$INSTANCE" "set -e; \
-  git clone -q https://github.com/dadatuputi/bitwarden_gcloud ~/bitwarden_gcloud; \
+  git clone -q https://github.com/Striffly/bitwarden_gcloud ~/bitwarden_gcloud; \
   cd ~/bitwarden_gcloud; \
   git checkout -q '$REF' 2>/dev/null || echo 'ref $REF not on upstream, staying on master'; \
   mkdir -p tests/e2e" >/dev/null
