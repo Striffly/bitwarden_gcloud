@@ -7,7 +7,7 @@
 # It runs a local registry, a fake SMTP server (mailpit) and a small compose project, and it removes
 # containers and images, so it refuses to run outside a throwaway machine (THROWAWAY=1). Needs Docker
 # (compose runs from the docker:cli image, as on the instance), podman (to publish multi-platform images), curl, jq, flock, and access to
-# Docker Hub for registry:2, busybox, mailpit and curlimages/curl.
+# Docker Hub for registry:2, busybox and mailpit, and ghcr.io for the msmtpd relay.
 #   THROWAWAY=1 bash tests/autoupdate-docker.sh
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 [ "$(id -u)" -eq 0 ] || { echo "run as root"; exit 2; }
@@ -22,7 +22,7 @@ ok() { # ok <title> <expected> <got>
 said() { grep -qF -- "$1" <<< "${out}" && echo yes || echo no; }      # did the last run say it?
 cleanup() {
     docker rm -f test-app test-plain > /dev/null 2>&1
-    docker rm -f test-registry test-smtp test-mailer > /dev/null 2>&1
+    docker rm -f test-registry test-smtp test-relay > /dev/null 2>&1
     docker images --format '{{.Repository}}:{{.Tag}}' | grep "^${REG}/" | xargs -r docker rmi -f > /dev/null 2>&1
 }
 cleanup
@@ -31,10 +31,13 @@ cleanup
 docker run -d --name test-registry -p "${REG}:5000" registry:2 > /dev/null || exit 2
 until curl -fs "http://${REG}/v2/" > /dev/null; do sleep 1; done
 docker run -d --name test-smtp -p 127.0.0.1:1025:1025 -p 127.0.0.1:8025:8025 \
-    -e MP_SMTP_AUTH='bwgc:pa"ss\word' -e MP_SMTP_AUTH_ALLOW_INSECURE=1 axllent/mailpit > /dev/null || exit 2
+    -e MP_SMTP_AUTH='bwgc:pa"ss\word' -e MP_SMTP_TLS_CERT=sans:localhost -e MP_SMTP_TLS_KEY=sans:localhost \
+    -e MP_SMTP_REQUIRE_STARTTLS=true axllent/mailpit > /dev/null || exit 2
 until curl -fs http://127.0.0.1:8025/api/v1/messages > /dev/null; do sleep 1; done
-# The script mails through the curl of a container's image (the vaultwarden container on the instance).
-docker create --name test-mailer curlimages/curl > /dev/null || exit 2
+# The script mails through the stack's relay, which alone holds the login (the msmtpd service). msmtp
+# never sends a password without TLS, so the server offers STARTTLS, with a self-signed certificate.
+docker run -d --name test-relay --network host -e LISTEN_PORT=2500 -e SMTP_HOST=127.0.0.1 -e SMTP_PORT=1025 \
+    -e SMTP_SECURITY=starttls -e SMTP_TLS_CHECKCERT=off -e SMTP_USER=bwgc -e SMTP_PASSWORD='pa"ss\word' ghcr.io/striffly/docker-msmtpd:master > /dev/null || exit 2
 mails() { curl -fs http://127.0.0.1:8025/api/v1/messages | jq -r '.total'; }
 last_subject() { curl -fs http://127.0.0.1:8025/api/v1/messages | jq -r '.messages[0].Subject'; }
 
@@ -84,12 +87,8 @@ services:
     container_name: test-plain
 EOF
 cat > "$STACK/.env" <<'EOF'
-SMTP_HOST=127.0.0.1
-SMTP_PORT=1025
-SMTP_SECURITY=off
-SMTP_USERNAME=bwgc
-SMTP_PASSWORD='pa"ss\word'   # quoted, with a comment
-SMTP_FROM=vault@example.com
+# The script only needs the sender and the recipient: the relay holds the login.
+SMTP_FROM='vault@example.com'   # quoted, with a comment
 BACKUP_EMAIL_TO="admin@example.com"
 EOF
 # Compose runs from docker:cli, as on the instance (the cloud-config's compose.sh).
@@ -99,7 +98,7 @@ docker pull -q "${TOOL}:1" > /dev/null
 
 run() {
     out=$(BWGC_DIR="$STACK" AUTOUPDATE_STATE_DIR="$ST" COMPOSE="$COMPOSE" EXTRA_IMAGES="${TOOL}:1" \
-          AUTOUPDATE_MAIL_CONTAINER=test-mailer MIN_AGE_SECONDS=3600 HEALTH_TIMEOUT=60 STEADY_SECONDS=8 AUTOUPDATE_LOCK="$D/lock" \
+          AUTOUPDATE_MAIL_RELAY=test-relay MIN_AGE_SECONDS=3600 HEALTH_TIMEOUT=60 STEADY_SECONDS=8 AUTOUPDATE_LOCK="$D/lock" \
           bash "$ROOT/utilities/autoupdate/autoupdate.sh" "$@" 2>&1); rc=$?
 }
 running() { docker exec "${1:-test-app}" cat /version 2> /dev/null; }
@@ -175,7 +174,7 @@ publish "$IMG" v9x v1-arm abc1234; publish "$IMG" v10 v1-arm latest; run
 ok "rc 1" 1 "$rc"
 ok "said CHECK THIS" yes "$(said "CHECK THIS")"
 ok "v9 no longer tracked" no "$(tracked | grep -qF "$V9" && echo yes || echo no)"
-ok "alert mailed, credentials with a quote and a backslash accepted" "$(( before + 1 ))" "$(mails)"
+ok "alert mailed through the relay, its login with a quote and a backslash accepted" "$(( before + 1 ))" "$(mails)"
 ok "mail subject" yes "$(last_subject | grep -q "image updates need attention" && echo yes || echo no)"
 
 echo "== Alert: nothing installable for 8 days =="
