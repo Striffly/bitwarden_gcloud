@@ -75,6 +75,14 @@ write_files:
       echo "bwgc: no deployment at \$MOUNT/bitwarden_gcloud" >&2
       exit 1
     fi
+    # Put the image versions autoupdate installed back under their tags. After
+    # the boot disk is recreated (upgrade-cos.sh), the images are gone and
+    # compose would otherwise pull whatever the tags point to today, with no
+    # quarantine. A failure is mailed by the script, and the stack still starts.
+    AUTOUPDATE="\$MOUNT/bitwarden_gcloud/utilities/autoupdate/autoupdate.sh"
+    if [ -f "\$AUTOUPDATE" ]; then
+      /bin/bash "\$AUTOUPDATE" --restore || echo "bwgc: some image versions could not be restored" >&2
+    fi
     echo "bwgc: recreating the stack against \$MOUNT"
     sh /var/lib/bwgc/compose.sh down --remove-orphans
     sh /var/lib/bwgc/compose.sh up -d
@@ -92,6 +100,10 @@ write_files:
     MOUNT=${_mount}
     mountpoint -q "\$MOUNT" || exit 0
     [ -f "\$MOUNT/bitwarden_gcloud/docker-compose.yml" ] || exit 0
+    # An image update holds this lock while it recreates a container and
+    # checks its health; starting it again underneath would get in the way.
+    exec 9> /run/bwgc-stack.lock
+    flock -n 9 || exit 0
     sh /var/lib/bwgc/compose.sh up -d
 
 - path: /var/lib/bwgc/cos-update-reboot.sh
@@ -202,6 +214,35 @@ write_files:
     [Install]
     WantedBy=timers.target
 
+- path: /etc/systemd/system/bwgc-autoupdate.service
+  permissions: "0644"
+  owner: root
+  content: |
+    [Unit]
+    Description=Update the bitwarden_gcloud images once past their quarantine
+    After=bwgc.service network-online.target
+    Wants=network-online.target
+    ConditionPathExists=${_mount}/bitwarden_gcloud/utilities/autoupdate/autoupdate.sh
+
+    [Service]
+    Type=oneshot
+    ExecStart=/bin/bash ${_mount}/bitwarden_gcloud/utilities/autoupdate/autoupdate.sh
+
+- path: /etc/systemd/system/bwgc-autoupdate.timer
+  permissions: "0644"
+  owner: root
+  content: |
+    [Unit]
+    Description=Daily image update check, before the reboot window
+
+    [Timer]
+    OnCalendar=*-*-* 03:00:00
+    RandomizedDelaySec=1h
+    Persistent=true
+
+    [Install]
+    WantedBy=timers.target
+
 - path: /etc/systemd/system/cos-update-reboot.service
   permissions: "0644"
   owner: root
@@ -235,6 +276,7 @@ runcmd:
 - systemctl daemon-reload
 - systemctl enable --now bwgc.service
 - systemctl enable --now bwgc-supervise.timer
+- systemctl enable --now bwgc-autoupdate.timer
 - systemctl enable --now cos-update-reboot.timer
 - /bin/sh /var/lib/bwgc/link-homes.sh
 EOF
