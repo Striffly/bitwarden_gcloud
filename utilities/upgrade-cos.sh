@@ -236,6 +236,11 @@ EOF
 	exit 1
 fi
 
+if ! check_secrets_body | on_vm "$INSTANCE" "sudo env DIR=$MOUNT/bitwarden_gcloud sh -s"; then
+	echo "Nothing has been changed." >&2
+	exit 1
+fi
+
 say "Plan"
 cat <<EOF
   from        $INSTANCE   (COS milestone $CURRENT)
