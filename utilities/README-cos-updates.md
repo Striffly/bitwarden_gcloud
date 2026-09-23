@@ -103,6 +103,73 @@ The timer replaces it and is declared in the same cloud-config as everything
 else. `reboot-on-update.sh` keeps its `eval` fix and is retained for reference;
 `migrate-to-data-disk.sh` removes the `startup-script` key when it runs.
 
+## Image updates
+
+The cloud-config also runs `utilities/autoupdate/autoupdate.sh` every day
+between 03:00 and 04:00 (`bwgc-autoupdate.timer`). It keeps every running
+container of the stack current, plus `docker:cli`, which `compose.sh` runs
+from, and it replaces watchtower: leave the `watchtower` compose profile off.
+
+**The rule.** A new version is installed once this host has seen it for 3
+days. The date is this host's own, never the image's `Created` field, which
+whoever publishes the image writes and can backdate. Watchtower's cooldown
+relies on that field.
+
+On every run, a version waiting its turn is kept only while upstream still
+points to it: through the followed tag, or through one of the precise tags
+that pointed to it when it was first seen, such as `1.37.3-alpine` for
+`latest-alpine`, or `master-20260923-153117` for `master`.
+
+- A tag that moves every day still gets updated: the version from three days
+  ago keeps its precise tag, and the newest version past its delay is
+  installed.
+- A version pulled or overwritten during its delay, as a compromised release
+  would be once noticed, is dropped and never installed. The next version
+  waits only its own delay.
+- A version is the image's digest for this host's platform (amd64). A rebuild
+  of another platform does not count as a new version.
+
+**Installing.** The version is pulled by digest and the tag the compose file
+uses is moved to it. Its services are then recreated. A container that does
+not become healthy gets the previous image back. For a container without a
+healthcheck, the test is that it is still running after 30 seconds.
+
+**Mails** go out through the SMTP settings in `.env`, to `AUTOUPDATE_EMAIL_TO`,
+or else to `BACKUP_EMAIL_TO`. The curl that ships with Container-Optimized OS
+cannot send mail, so the message is sent with the curl in the vaultwarden
+image, which it ships for its own healthcheck. You get one when:
+
+- an update fails and the previous image is put back;
+- a tag that should never move (a commit, a linuxserver `-ls` build, a build
+  date) points to another image;
+- a tag has had nothing installable for 7 days;
+- a registry cannot be read.
+
+**After a boot disk rebuild** (`upgrade-cos.sh`), the images are gone. Before
+the stack starts, `bwgc.service` puts back the exact versions that were
+installed, pulled by digest. Otherwise compose would pull whatever the tags
+point to that day, with no quarantine. The quarantine state and the list of
+installed versions live on the data disk, in `/mnt/disks/bwgc/autoupdate`.
+
+```sh
+journalctl -u bwgc-autoupdate.service --no-pager | tail -30
+sudo systemctl start bwgc-autoupdate.service     # run now
+sudo DRY_RUN=1 bash ~/bitwarden_gcloud/utilities/autoupdate/autoupdate.sh   # decide, change nothing
+sudo bash ~/bitwarden_gcloud/utilities/autoupdate/autoupdate.sh --test-mail
+```
+
+**Updating by hand** (`docker compose pull` then `up -d`) bypasses the
+quarantine. It is a deliberate act, so the next run notices the change and
+starts tracking from the new version.
+
+**Limit.** A compromised version whose publisher leaves its precise tag in
+place is installed once its delay is over. The delay gives the publisher
+time to clean up; it does not replace that.
+
+`tests/autoupdate-docker.sh` covers each case against a real Docker daemon and
+a local registry. It removes containers and images, so it only runs on a
+throwaway machine.
+
 ## Limits
 
 This applies updates **within the current milestone only**. COS does not move a
