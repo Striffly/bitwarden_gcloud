@@ -134,10 +134,9 @@ uses is moved to it. Its services are then recreated. A container that does
 not become healthy gets the previous image back. For a container without a
 healthcheck, the test is that it is still running after 30 seconds.
 
-**Mails** go out through the SMTP settings in `.env`, to `AUTOUPDATE_EMAIL_TO`,
-or else to `BACKUP_EMAIL_TO`. The curl that ships with Container-Optimized OS
-cannot send mail, so the message is sent with the curl in the vaultwarden
-image, which it ships for its own healthcheck. You get one when:
+**Mails** go to `AUTOUPDATE_EMAIL_TO`, or else to `BACKUP_EMAIL_TO`, through
+the stack's `msmtpd` relay, which holds the SMTP credentials for every service.
+You get one when:
 
 - an update fails and the previous image is put back;
 - a tag that should never move (a commit, a linuxserver `-ls` build, a build

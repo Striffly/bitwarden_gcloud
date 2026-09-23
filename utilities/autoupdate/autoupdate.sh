@@ -31,8 +31,7 @@
 # --restore, run by bwgc.service before the stack starts, puts them back if the boot disk was
 # recreated: otherwise "compose up" would pull whatever the tags point to at that moment.
 #
-# Problems are mailed with the SMTP settings from .env, to AUTOUPDATE_EMAIL_TO or BACKUP_EMAIL_TO,
-# through the curl of the vaultwarden image (the one of Container-Optimized OS has no SMTP).
+# Problems are mailed to AUTOUPDATE_EMAIL_TO or BACKUP_EMAIL_TO through the stack's msmtpd relay.
 #
 #   autoupdate.sh                 one run: check every image, install what is ready
 #   autoupdate.sh --restore       put the recorded versions back under their tags
@@ -52,7 +51,7 @@ HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-300}"
 STEADY_SECONDS="${STEADY_SECONDS:-30}"         # without a healthcheck: still running after this long
 LOCK="${AUTOUPDATE_LOCK:-/run/bwgc-stack.lock}" # shared with supervise-stack.sh
 DRY_RUN="${DRY_RUN:-}"
-MAIL_CONTAINER="${AUTOUPDATE_MAIL_CONTAINER:-bitwarden}"
+MAIL_RELAY="${AUTOUPDATE_MAIL_RELAY:-msmtpd}"
 
 FORGET_SECONDS=7776000      # 90 days without news of a tag: it is no longer deployed
 ALERT_SECONDS=604800        # 7 days with nothing installable: the tag moves faster than the quarantine
@@ -443,52 +442,29 @@ restore() {
 
 # --- Mail -----------------------------------------------------------------------------------------------
 
-# send_mail <subject> <body file>. .env is read by compose itself ("config --environment" prints the
-#   variables as it resolved them, quotes and escapes handled), not parsed here. Container-Optimized OS
-#   ships a curl without SMTP, so the mail goes out through the curl of MAIL_CONTAINER's image: the
-#   vaultwarden image, which installs curl for its own healthcheck and whose container already holds
-#   these SMTP settings. Message and credentials reach it in a private directory mounted read-only,
-#   never on a command line.
+# send_mail <subject> <body file>: handed to the stack's mail relay (MAIL_RELAY), which holds the SMTP
+#   credentials, through the msmtp client in its own image. Only the sender and the recipient are
+#   needed here, read from the compose environment ("config --environment" prints the variables as
+#   compose resolved them from .env), not parsed from .env.
 send_mail() {
-    local line host="" port="" security="" user="" pass="" from="" to="" backup_to="" url image dir r s
-    local tls=()
+    local line from="" to="" backup_to=""
     # shellcheck disable=SC2086 # COMPOSE is a command line
     while IFS= read -r line; do
         case "${line}" in
-            SMTP_HOST=*)           host="${line#*=}" ;;
-            SMTP_PORT=*)           port="${line#*=}" ;;
-            SMTP_SECURITY=*)       security="${line#*=}" ;;
-            SMTP_USERNAME=*)       user="${line#*=}" ;;
-            SMTP_PASSWORD=*)       pass="${line#*=}" ;;
             SMTP_FROM=*)           from="${line#*=}" ;;
             AUTOUPDATE_EMAIL_TO=*) to="${line#*=}" ;;
             BACKUP_EMAIL_TO=*)     backup_to="${line#*=}" ;;
         esac
     done < <(${COMPOSE} config --environment 2> /dev/null)
     [ -n "${to}" ] || to="${backup_to}"
-    if [ -z "${host}" ] || [ -z "${from}" ] || [ -z "${to}" ]; then
-        echo "no SMTP_HOST, SMTP_FROM or recipient in the compose environment: mail not sent" >&2; return 1
+    if [ -z "${from}" ] || [ -z "${to}" ]; then
+        echo "no SMTP_FROM or recipient in the compose environment: mail not sent" >&2; return 1
     fi
-    case "${security}" in
-        force_tls) url="smtps://${host}:${port:-465}" ;;
-        off)       url="smtp://${host}:${port:-25}" ;;
-        *)         url="smtp://${host}:${port:-587}"; tls=(--ssl-reqd) ;;
-    esac
-    image=$(docker inspect -f '{{.Image}}' "${MAIL_CONTAINER}" 2> /dev/null) \
-        || { echo "no ${MAIL_CONTAINER} container to send the mail from: mail not sent" >&2; return 1; }
-    dir=$(mktemp -d) || return 1
-    { printf 'From: %s\r\nTo: %s\r\nSubject: %s\r\nDate: %s\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n' \
+    { printf 'From: %s\nTo: %s\nSubject: %s\nDate: %s\nContent-Type: text/plain; charset=utf-8\n\n' \
           "${from}" "${to}" "$1" "$(date -R)"
-      while IFS= read -r line || [ -n "${line}" ]; do printf '%s\r\n' "${line}"; done < "$2"; } > "${dir}/message"
-    s="${user}:${pass}"; s="${s//\\/\\\\}"; s="${s//\"/\\\"}"
-    { [ -z "${user}" ] || printf 'user = "%s"\n' "${s}"; } > "${dir}/curlrc"
-    # As this script's own user, which owns the private directory, whatever user the image defaults to.
-    docker run --rm --network host --user "$(id -u):$(id -g)" -v "${dir}:/mail:ro" --entrypoint curl "${image}" \
-        -sS --max-time 60 --config /mail/curlrc "${tls[@]}" --url "${url}" \
-        --mail-from "${from}" --mail-rcpt "${to}" --upload-file /mail/message
-    r=$?
-    rm -rf "${dir}"
-    return "${r}"
+      cat "$2"; } \
+        | docker exec -i "${MAIL_RELAY}" msmtp -C /dev/null --host=127.0.0.1 --port=2500 --tls=off --auth=off \
+              --from="${from}" -- "${to}"
 }
 
 # --- Main -----------------------------------------------------------------------------------------------
