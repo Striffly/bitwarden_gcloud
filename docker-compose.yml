@@ -32,6 +32,12 @@ services:
     # so "warn" loses no protection. Set LOG_LEVEL=info in .env when debugging.
     - LOG_LEVEL=${LOG_LEVEL:-warn}
     - SHOW_PASSWORD_HINT=false
+    # This vault is only used from the apps and the browser extension, which
+    # talk to the API. Without the web vault there is no page serving the
+    # login form to phish or tamper with. It also breaks the flows that open
+    # a web page: viewing a Send, accepting an organisation or emergency access
+    # invitation, verifying an email, and WebAuthn/FIDO2 2FA in some clients.
+    - WEB_VAULT_ENABLED=false
     - DOMAIN=https://${DOMAIN}          # DOMAIN is set in .env but doesn't have protocol prefix
     - IP_HEADER=X-Real-IP
     - ADMIN_TOKEN                       # Value-less variables are set in .env
