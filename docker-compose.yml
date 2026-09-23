@@ -19,6 +19,7 @@ services:
     pids_limit: 200
     depends_on:
     - proxy
+    - msmtpd
     <<: *default-logging
     volumes:
     - ${PWD}/bitwarden:/data
@@ -40,13 +41,13 @@ services:
     - IP_HEADER=X-Real-IP
     - ADMIN_TOKEN                       # Value-less variables are set in .env
     - SIGNUPS_ALLOWED
-    - SMTP_HOST
+    # Mail goes through the msmtpd relay below, the only service that holds
+    # the SMTP credentials: no login, and no TLS on the stack's own network.
+    - SMTP_HOST=msmtpd
     - SMTP_FROM
     - SMTP_FROM_NAME=Bitwarden (${DOMAIN})
-    - SMTP_PORT
-    - SMTP_SECURITY
-    - SMTP_USERNAME
-    - SMTP_PASSWORD
+    - SMTP_PORT=2500
+    - SMTP_SECURITY=off
     - PUSH_ENABLED
     - PUSH_INSTALLATION_ID
     - PUSH_INSTALLATION_KEY
@@ -69,6 +70,7 @@ services:
     pids_limit: 100
     depends_on:
     - bitwarden
+    - msmtpd
     <<: *default-logging
     volumes:
       - ${PWD}/.env:/.env:ro
@@ -92,13 +94,12 @@ services:
     # CHECK_SCHEDULE=disabled turns it off.
     - CHECK_SCHEDULE
     - BACKUP_MAX_AGE_DAYS
-    - SMTP_HOST
+    # Through the msmtpd relay, like vaultwarden.
+    - SMTP_HOST=msmtpd
     - SMTP_FROM
     - SMTP_FROM_NAME=Bitwarden Backup (${DOMAIN})
-    - SMTP_PORT
-    - SMTP_SECURITY
-    - SMTP_USERNAME
-    - SMTP_PASSWORD
+    - SMTP_PORT=2500
+    - SMTP_SECURITY=off
     - TZ
 
 
@@ -150,25 +151,27 @@ services:
     - TZ
 
 
-  # Uncomment if you want fail2ban to send e-mails,
-  # and adjust the depends_on directive in the fail2ban service,
-  # see https://github.com/crazy-max/docker-fail2ban/pull/169/files
-  # msmtpd:
-  #   image: crazymax/msmtpd:latest
-  #   restart: always
-  #   container_name: fail2ban_msmtpd
-  #   <<: *default-logging
-  #   ports:
-  #   - "127.0.0.1:2500:2500"
-  #   environment:
-  #   - TZ
-  #   - SMTP_HOST
-  #   - SMTP_PORT
-  #   - SMTP_AUTH=on
-  #   - SMTP_USER=${SMTP_USERNAME}
-  #   - SMTP_PASSWORD
-  #   - SMTP_FROM
-  #   - SMTP_TLS
+  msmtpd:
+    # SMTP relay for the whole stack: vaultwarden, backup and autoupdate hand
+    # their mail to msmtpd:2500 on the stack's network, without a login, and it
+    # sends it on with the SMTP settings from .env. No port is published.
+    # From https://github.com/Striffly/docker-msmtpd: msmtp from Alpine's
+    # packages, never root, tested, scanned and signed by that repository's CI,
+    # rebuilt daily when Alpine packages fall behind.
+    image: ghcr.io/striffly/docker-msmtpd:master
+    restart: ${BWGC_RESTART_POLICY:-always}
+    container_name: msmtpd
+    mem_limit: 32m
+    pids_limit: 50
+    <<: *default-logging
+    environment:
+    - SMTP_HOST
+    - SMTP_PORT
+    - SMTP_SECURITY
+    - SMTP_USER=${SMTP_USERNAME}
+    - SMTP_PASSWORD
+    - SMTP_FROM
+    - TZ
 
 
   fail2ban:
