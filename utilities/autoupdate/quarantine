@@ -1,0 +1,126 @@
+#!/bin/bash
+# quarantine: the state file behind autoupdate.sh, and the only code that decides when a value is old
+# enough to install.
+#
+# A value's age runs from the FIRST TIME THIS HOST SAW IT, never from a date supplied upstream: an
+# image's "Created" field is written by whoever publishes it, so it can be backdated.
+#
+# A value only counts against the REFERENCE in place when it was seen (the running image). If that
+# changed since (a manual pull), nothing says the value is newer than what runs now: installing it
+# could downgrade. Tracking starts over.
+#
+#   quarantine --list    <state> <key> <reference>              tracked values, oldest first
+#   quarantine --pick    <state> <key> <reference> <min_age> <value…>
+#       The values the caller still considers valid; the others are forgotten.
+#       "ready <value>"                          rc 0 - the most recently seen value past its delay
+#       "wait <value> <seconds> <waiting>"       rc 1 - none is; the one closest to it, and for how
+#                                                many seconds nothing has been installable
+#   quarantine --adopted <state> <key> <value> <reference>      after <value> was installed
+#   quarantine --clear   <state> <key>                          after a failure, or once up to date
+#   quarantine --forget  <state> <seconds>                      drops keys silent for that long
+#
+# There is no frozen candidate: every value keeps its own date, and the caller drops on each run those
+# upstream no longer vouches for. A value withdrawn during its delay is never installed, and the next
+# one only waits its own delay. After an install, values seen since keep their date and move under the
+# new reference.
+#
+# Adapted from the same tool in the author's server-infra repository, where it also drives Git updates.
+set -uo pipefail
+
+is_number() { case "$1" in ""|*[!0-9]*) return 1 ;; esac; }
+is_word()   { case "$1" in ""|*[[:space:]]*) return 1 ;; esac; }   # non-empty, no whitespace
+
+# One line per value: <key> <value> <first_seen> <reference>. Key and value are opaque, without spaces.
+# The "@" line of a key holds the time since which it has been waiting.
+state_open() {
+    local state="$1"
+    install -d -m 0700 "$(dirname "${state}")" || return 2
+    [ -f "${state}" ] || : > "${state}" || return 2
+    chmod 600 "${state}"
+}
+
+# state_replace <state> <key> [line…]: rewrite without the key's lines, then append <line…>.
+state_replace() {
+    local state="$1" key="$2" tmp; shift 2
+    tmp=$(mktemp "${state}.XXXXXX") || return 2
+    awk -v k="${key}" '$1 != k' "${state}" > "${tmp}" || { rm -f "${tmp}"; return 2; }
+    [ "$#" -gt 0 ] && printf '%s\n' "$@" >> "${tmp}"
+    chmod 600 "${tmp}"; mv -f "${tmp}" "${state}"
+}
+
+case "${1:-}" in
+    --clear)
+        [ "$#" -eq 3 ] || { echo "quarantine: usage --clear <state> <key>" >&2; exit 2; }
+        state_open "$2" || exit 2
+        state_replace "$2" "$3" || exit 2
+        exit 0 ;;
+    --forget)
+        [ "$#" -eq 3 ] || { echo "quarantine: usage --forget <state> <seconds>" >&2; exit 2; }
+        is_number "$3" || { echo "quarantine: --forget expects seconds, got \"$3\"" >&2; exit 2; }
+        state_open "$2" || exit 2
+        tmp=$(mktemp "$2.XXXXXX") || exit 2
+        if awk -v lim=$(( $(date +%s) - $3 )) '$3 >= lim' "$2" > "${tmp}"; then
+            chmod 600 "${tmp}"; mv -f "${tmp}" "$2"
+        else
+            rm -f "${tmp}"; exit 2
+        fi
+        exit 0 ;;
+    --list)
+        [ "$#" -eq 4 ] || { echo "quarantine: usage --list <state> <key> <reference>" >&2; exit 2; }
+        state_open "$2" || exit 2
+        awk -v k="$3" -v r="$4" '$1 == k && $2 != "@" && $4 == r { print $2 }' "$2" || exit 2
+        exit 0 ;;
+    --pick)
+        [ "$#" -ge 6 ] || { echo "quarantine: usage --pick <state> <key> <reference> <min_age> <value…>" >&2; exit 2; }
+        state="$2"; key="$3"; ref="$4"; min_age="$5"; shift 5
+        is_word "${ref}" || { echo "quarantine: empty reference or one with spaces (key ${key})" >&2; exit 2; }
+        # No default: "[ … -lt garbage ]" is false, so it would install everything at once. An unreadable
+        # threshold must close the quarantine, not lift it.
+        is_number "${min_age}" \
+            || { echo "quarantine: min_age=\"${min_age}\" is not a number of seconds (key ${key})" >&2; exit 2; }
+        state_open "${state}" || { echo "quarantine: ${state} unusable" >&2; exit 2; }
+        now=$(date +%s); since="${now}"
+        declare -A seen=() kept=()
+        # Only lines of the current reference count. An unreadable date makes the value new: empty, it
+        # would count as 0 and skip the delay.
+        while read -r v s r; do
+            [ "${r}" = "${ref}" ] || continue
+            is_number "${s}" || continue
+            if [ "${v}" = "@" ]; then since="${s}"; else seen[${v}]="${s}"; fi
+        done < <(awk -v k="${key}" '$1 == k { print $2, $3, $4 }' "${state}")
+        lines=("${key} @ ${since} ${ref}"); best=""; near=""
+        for v in "$@"; do
+            if ! is_word "${v}" || [ "${v}" = "@" ]; then
+                echo "quarantine: empty, spaced or reserved value (key ${key})" >&2; exit 2
+            fi
+            [ -n "${kept[${v}]+x}" ] && continue
+            s="${seen[${v}]:-${now}}"; kept[${v}]="${s}"
+            lines+=("${key} ${v} ${s} ${ref}")
+            if [ $(( now - s )) -ge "${min_age}" ]; then
+                if [ -z "${best}" ] || [ "${s}" -gt "${kept[${best}]}" ]; then best="${v}"; fi
+            else
+                if [ -z "${near}" ] || [ "${s}" -lt "${kept[${near}]}" ]; then near="${v}"; fi
+            fi
+        done
+        state_replace "${state}" "${key}" "${lines[@]}" || exit 2
+        [ -n "${best}" ] && { printf 'ready %s\n' "${best}"; exit 0; }
+        printf 'wait %s %s %s\n' "${near}" "$(( now - kept[${near}] ))" "$(( now - since ))"
+        exit 1 ;;
+    --adopted)
+        [ "$#" -eq 5 ] || { echo "quarantine: usage --adopted <state> <key> <value> <reference>" >&2; exit 2; }
+        state="$2"; key="$3"; val="$4"; ref="$5"
+        state_open "${state}" || exit 2
+        at=$(awk -v k="${key}" -v v="${val}" '$1 == k && $2 == v { print $3; exit }' "${state}")
+        is_number "${at}" || { echo "quarantine: ${val} is not tracked (key ${key})" >&2; exit 2; }
+        # What was seen after it stays, under the new reference; the wait restarts from the oldest.
+        mapfile -t lines < <(awk -v k="${key}" -v s="${at}" -v r="${ref}" \
+            '$1 == k && $2 != "@" && $3 + 0 > s + 0 { print $1, $2, $3, r }' "${state}")
+        if [ "${#lines[@]}" -gt 0 ]; then
+            since=$(printf '%s\n' "${lines[@]}" | awk 'NR == 1 || $3 < m { m = $3 } END { print m }')
+            lines=("${key} @ ${since} ${ref}" "${lines[@]}")
+        fi
+        state_replace "${state}" "${key}" "${lines[@]}" || exit 2
+        exit 0 ;;
+esac
+echo "quarantine: unknown mode \"${1:-}\" (--list, --pick, --adopted, --clear, --forget)" >&2
+exit 2
