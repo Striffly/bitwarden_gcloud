@@ -15,8 +15,6 @@ services:
     image: vaultwarden/server:latest-alpine
     restart: ${BWGC_RESTART_POLICY:-always}
     container_name: bitwarden
-    labels:
-    - "com.centurylinklabs.watchtower.enable=true"
     mem_limit: 320m
     pids_limit: 200
     depends_on:
@@ -67,8 +65,6 @@ services:
     image: ghcr.io/striffly/bwgc_backup:master
     restart: ${BWGC_RESTART_POLICY:-on-failure}
     container_name: backup
-    labels:
-    - "com.centurylinklabs.watchtower.enable=true"
     mem_limit: 192m
     pids_limit: 100
     depends_on:
@@ -117,8 +113,6 @@ services:
     image: ghcr.io/striffly/bwgc_caddy:master
     restart: ${BWGC_RESTART_POLICY:-always}
     container_name: proxy
-    labels:
-    - "com.centurylinklabs.watchtower.enable=true"
     mem_limit: 128m
     pids_limit: 100
     <<: *default-logging
@@ -143,8 +137,6 @@ services:
     image: linuxserver/ddclient
     restart: ${BWGC_RESTART_POLICY:-always}
     container_name: ddns
-    labels:
-    - "com.centurylinklabs.watchtower.enable=true"
     mem_limit: 64m
     pids_limit: 50
     <<: *default-logging
@@ -187,8 +179,6 @@ services:
     image: crazymax/fail2ban:latest
     restart: ${BWGC_RESTART_POLICY:-always}
     container_name: fail2ban
-    labels:
-    - "com.centurylinklabs.watchtower.enable=true"
     mem_limit: 128m
     pids_limit: 100
     <<: *default-logging
@@ -220,8 +210,6 @@ services:
     image: ghcr.io/striffly/bwgc_countryblock:master
     restart: ${BWGC_RESTART_POLICY:-always}
     container_name: countryblock
-    labels:
-    - "com.centurylinklabs.watchtower.enable=true"
     mem_limit: 128m
     pids_limit: 100
     <<: *default-logging
@@ -242,18 +230,18 @@ services:
     # and restart it with the same options that were used when it was deployed initially
     # https://github.com/nicholas-fedor/watchtower
     #
-    # Major-version tag: 1.x updates arrive through watchtower itself, subject to
-    # the cooldown below, but a breaking 2.0 never does on its own.
-    image: nickfedor/watchtower:1
+    # Pinned rather than floating. This container decides when everything else
+    # updates, so it should not silently update itself. Renovate raises a PR when
+    # a new release appears, and renovate.json sets pinDigests, which needs an
+    # explicit tag to work from.
+    image: nickfedor/watchtower:1.21.2
     restart: ${BWGC_RESTART_POLICY:-always}
     container_name: watchtower
-    labels:
-    - "com.centurylinklabs.watchtower.enable=true"
     mem_limit: 96m
     pids_limit: 100
-    # Always on in this deployment, restricted by WATCHTOWER_LABEL_ENABLE and
-    # WATCHTOWER_COOLDOWN_DELAY below. The bwgc images all come from the
-    # Striffly forks, so every container here is updated automatically.
+    # Opt-in: this service only starts with `docker-compose --profile watchtower up -d`.
+    # See the security note in README.md before enabling.
+    profiles: ["watchtower"]
     <<: *default-logging
     depends_on:
     - bitwarden
@@ -262,13 +250,6 @@ services:
     environment:
     - WATCHTOWER_CLEANUP=true
     - WATCHTOWER_SCHEDULE
-    # Only update containers labelled com.centurylinklabs.watchtower.enable=true.
-    - WATCHTOWER_LABEL_ENABLE=true
-    # Only apply an image once it is 3 days old, so a compromised or broken
-    # release has time to be noticed and pulled first. Applies to every
-    # container watchtower updates, itself included. The age comes from the
-    # image's own build date.
-    - WATCHTOWER_COOLDOWN_DELAY=3d
     - TZ
 
 
