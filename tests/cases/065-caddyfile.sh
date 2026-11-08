@@ -20,7 +20,7 @@ unmet=$(printf '%s\n' "$placeholders" | grep -vxF -f "$WORK/proxy-env" || true)
 
 validate=""
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-	image=$(grep -oE 'ghcr.io/dadatuputi/bwgc_caddy:[A-Za-z0-9._-]+' "$ROOT/docker-compose.yml" | head -1)
+	image=$(grep -oE 'ghcr.io/[a-z0-9_-]+/bwgc_caddy:[A-Za-z0-9._-]+' "$ROOT/docker-compose.yml" | head -1)
 	validate="docker run --rm -e DOMAIN=vault.example.test -e EMAIL=admin@example.test \
 		-v $caddyfile:/etc/caddy/Caddyfile:ro $image \
 		caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile"

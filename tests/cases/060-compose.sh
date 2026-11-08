@@ -53,28 +53,29 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; 
 	assert_contains "$(cat "$WORK/compose-tunnel.yaml")" "pull_policy: daily" "the tunnel path re-checks for a newer cloudflared each day"
 	assert_contains "$(cat "$WORK/compose-tunnel.yaml")" "IP_HEADER: CF-Connecting-IP" "the tunnel path tells vaultwarden which header carries the client IP"
 
-	# watchtower is how security updates reach an unattended deployment, so it
-	# runs by default, and WATCHTOWER_MONITOR_ONLY reaches it to turn that off.
+	# In this deployment bwgc-autoupdate.timer applies image updates, so
+	# watchtower stays behind its profile. Started by hand, it still gets
+	# WATCHTOWER_MONITOR_ONLY.
 	svcs=$(compose -f "$ROOT/docker-compose.yml" config --services 2>/dev/null | sort | tr '\n' ' ')
-	assert_contains "$svcs" "watchtower " "watchtower runs by default"
-	wt=$(WATCHTOWER_MONITOR_ONLY=true compose -f "$ROOT/docker-compose.yml" config watchtower 2>/dev/null)
+	assert_not_contains "$svcs" "watchtower " "watchtower does not run by default"
+	svcs=$(compose -f "$ROOT/docker-compose.yml" --profile watchtower config --services 2>/dev/null | sort | tr '\n' ' ')
+	assert_contains "$svcs" "watchtower " "watchtower runs with --profile watchtower"
+	wt=$(WATCHTOWER_MONITOR_ONLY=true compose -f "$ROOT/docker-compose.yml" --profile watchtower config watchtower 2>/dev/null)
 	assert_contains "$wt" 'WATCHTOWER_MONITOR_ONLY: "true"' "WATCHTOWER_MONITOR_ONLY reaches watchtower"
 
-	# The end-to-end overlay: bitwarden and backup only, nothing that needs a
-	# hostname, and no cloudflared either.
+	# The end-to-end overlay: bitwarden and backup, and the msmtpd relay both
+	# send their mail through; nothing that needs a hostname, and no
+	# cloudflared either.
 	svcs=$(compose -f "$ROOT/docker-compose.yml" -f "$ROOT/tests/e2e/docker-compose.e2e.yml" config --services 2>/dev/null | sort | tr '\n' ' ')
-	assert_eq "$svcs" "backup bitwarden " "the e2e overlay runs only bitwarden and backup"
+	assert_eq "$svcs" "backup bitwarden msmtpd " "the e2e overlay runs only bitwarden, backup and the msmtpd relay"
 else
 	printf '  skip docker compose config (docker compose not installed)\n'
 fi
 
-# The bwgc images follow their major version tag, which moves only to a
-# compatible release or a security rebuild of one. :master would also carry
-# unreleased and breaking changes to every deployment.
-for img in bwgc_backup bwgc_caddy bwgc_countryblock; do
-	ref=$(grep -oE "ghcr.io/dadatuputi/$img:[A-Za-z0-9._-]+" "$ROOT/docker-compose.yml" | head -1)
-	case "${ref##*:}" in
-		[0-9]|[0-9][0-9]) assert_eq ok ok "$img follows a major version tag (${ref##*:})" ;;
-		*) assert_eq "${ref##*:}" "a major version" "$img follows a major version tag" ;;
-	esac
+# The bwgc images come from the Striffly forks, which publish no releases:
+# they follow :master, and bwgc-autoupdate.timer holds each new build in
+# quarantine before installing it.
+for img in bwgc_backup bwgc_caddy bwgc_countryblock docker-msmtpd; do
+	ref=$(grep -oE "ghcr.io/[a-z0-9_-]+/$img:[A-Za-z0-9._-]+" "$ROOT/docker-compose.yml" | head -1)
+	assert_eq "$ref" "ghcr.io/striffly/$img:master" "$img comes from the Striffly fork's :master"
 done
