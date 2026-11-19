@@ -1,0 +1,5 @@
+# Ignore everything in this directory: the robot's secrets, the Google key
+# and the bw/bwdc state live here.
+*
+# Except this file
+!.gitignore
