@@ -62,6 +62,9 @@ services:
     - YUBICO_SECRET_KEY
     - YUBICO_SERVER
     - ORG_CREATION_USERS
+    # Groups in organisations: give a collection to a group once, instead of
+    # to each member. Off in vaultwarden unless set.
+    - ORG_GROUPS_ENABLED
     - TZ
 
 
