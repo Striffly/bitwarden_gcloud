@@ -63,6 +63,13 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; 
 	wt=$(WATCHTOWER_MONITOR_ONLY=true compose -f "$ROOT/docker-compose.yml" --profile watchtower config watchtower 2>/dev/null)
 	assert_contains "$wt" 'WATCHTOWER_MONITOR_ONLY: "true"' "WATCHTOWER_MONITOR_ONLY reaches watchtower"
 
+	# orgsync holds an admin's secrets, so it only ever runs where its profile
+	# is turned on, never on a deployment that did not ask for it.
+	svcs=$(compose -f "$ROOT/docker-compose.yml" config --services 2>/dev/null | sort | tr '\n' ' ')
+	assert_not_contains "$svcs" "orgsync " "orgsync does not run by default"
+	svcs=$(compose -f "$ROOT/docker-compose.yml" --profile orgsync config --services 2>/dev/null | sort | tr '\n' ' ')
+	assert_contains "$svcs" "orgsync " "orgsync runs with --profile orgsync"
+
 	# The end-to-end overlay: bitwarden and backup, and the msmtpd relay both
 	# send their mail through; nothing that needs a hostname, and no
 	# cloudflared either.
@@ -75,7 +82,7 @@ fi
 # The bwgc images come from the Striffly forks, which publish no releases:
 # they follow :master, and bwgc-autoupdate.timer holds each new build in
 # quarantine before installing it.
-for img in bwgc_backup bwgc_caddy bwgc_countryblock docker-msmtpd; do
+for img in bwgc_backup bwgc_caddy bwgc_countryblock docker-msmtpd bwgc_orgsync; do
 	ref=$(grep -oE "ghcr.io/[a-z0-9_-]+/$img:[A-Za-z0-9._-]+" "$ROOT/docker-compose.yml" | head -1)
 	assert_eq "$ref" "ghcr.io/striffly/$img:master" "$img comes from the Striffly fork's :master"
 done

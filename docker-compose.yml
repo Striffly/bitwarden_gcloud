@@ -184,6 +184,44 @@ services:
     - TZ
 
 
+  orgsync:
+    # Keeps an organisation in step with a Google Workspace directory: invites
+    # new users every 15 minutes, and every minute confirms those who accepted
+    # and gives them ORGSYNC_COLLECTION, through an admin account whose secrets
+    # live in orgsync/. Opt-in: set COMPOSE_PROFILES=orgsync in .env. Read the
+    # trade-off in its README before enabling it.
+    # From https://github.com/Striffly/bwgc_orgsync: bw and bwdc on Debian,
+    # never root, tested, scanned and signed by that repository's CI, rebuilt
+    # weekly for new bw/bwdc releases and daily when packages fall behind.
+    image: ghcr.io/striffly/bwgc_orgsync:master
+    profiles: ["orgsync"]
+    restart: ${BWGC_RESTART_POLICY:-always}
+    container_name: orgsync
+    user: "${PUID:-1500}:${PGID:-1500}"
+    # bw serve stays resident (~150 MB); bwdc peaks at ~210 MB for 15-20 s.
+    mem_limit: 384m
+    pids_limit: 100
+    <<: *default-logging
+    depends_on:
+    - bitwarden
+    - msmtpd
+    volumes:
+    - ${PWD}/orgsync/data:/data
+    - ${PWD}/orgsync/orgsync.env:/secrets/orgsync.env:ro
+    - ${PWD}/orgsync/google-key.json:/secrets/google-key.json:ro
+    environment:
+    - ORGSYNC_COLLECTION=${ORGSYNC_COLLECTION:-}
+    - ORGSYNC_COLLECTION_READONLY=${ORGSYNC_COLLECTION_READONLY:-true}
+    - ORGSYNC_GSUITE_DOMAIN=${ORGSYNC_GSUITE_DOMAIN:-}
+    - ORGSYNC_GSUITE_ADMIN=${ORGSYNC_GSUITE_ADMIN:-}
+    - ORGSYNC_USER_FILTER=${ORGSYNC_USER_FILTER:-}
+    - ORGSYNC_REMOVE_DISABLED=${ORGSYNC_REMOVE_DISABLED:-true}
+    - ORGSYNC_OVERWRITE_EXISTING=${ORGSYNC_OVERWRITE_EXISTING:-false}
+    - ORGSYNC_ALERT_TO=${AUTOUPDATE_EMAIL_TO:-${BACKUP_EMAIL_TO:-}}
+    - ORGSYNC_MAIL_FROM=${SMTP_FROM:-}
+    - TZ
+
+
   fail2ban:
     # Implements fail2ban functionality, banning ips that
     # try to bruteforce your vault
