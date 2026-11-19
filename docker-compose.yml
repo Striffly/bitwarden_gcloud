@@ -205,11 +205,19 @@ services:
     depends_on:
     - bitwarden
     - msmtpd
+    - proxy
+    # bw only talks HTTPS, so orgsync reaches the vault through the proxy,
+    # under its real name and certificate. This alias resolves ${DOMAIN} to
+    # the proxy container on the stack's network, for this service only: the
+    # traffic never leaves the host.
+    links:
+    - "proxy:${DOMAIN:-localhost}"
     volumes:
     - ${PWD}/orgsync/data:/data
     - ${PWD}/orgsync/orgsync.env:/secrets/orgsync.env:ro
     - ${PWD}/orgsync/google-key.json:/secrets/google-key.json:ro
     environment:
+    - ORGSYNC_SERVER=https://${DOMAIN:-localhost}
     - ORGSYNC_COLLECTION=${ORGSYNC_COLLECTION:-}
     - ORGSYNC_COLLECTION_READONLY=${ORGSYNC_COLLECTION_READONLY:-true}
     - ORGSYNC_GSUITE_DOMAIN=${ORGSYNC_GSUITE_DOMAIN:-}
